@@ -1,0 +1,104 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Find and extract ZIP
+        run: |
+          set -e
+
+          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ไม่พบไฟล์ ZIP"
+            exit 1
+          fi
+
+          echo "พบ ZIP: $ZIP_FILE"
+
+          mkdir -p extracted
+          unzip -q "$ZIP_FILE" -d extracted
+
+          echo "ไฟล์หลังแตก ZIP:"
+          find extracted -maxdepth 3 -type f | head -100
+
+      - name: Find Android project
+        run: |
+          set -e
+
+          PROJECT_DIR=$(find extracted -type f -name "settings.gradle*" -o -name "build.gradle*" | head -n 1 | xargs -r dirname)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ไม่พบ Android Gradle project"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "พบโปรเจกต์ที่: $PROJECT_DIR"
+
+      - name: Fix Kotlin duplicate dependencies
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          cat > fix-kotlin.gradle <<'EOF'
+          allprojects {
+              configurations.configureEach {
+                  resolutionStrategy {
+                      force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
+                      force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
+                      force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
+                  }
+              }
+          }
+          EOF
+
+          echo "Kotlin dependency fix created"
+
+      - name: Build APK
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug \
+              --no-daemon \
+              -I fix-kotlin.gradle
+          else
+            gradle assembleDebug \
+              --no-daemon \
+              -I fix-kotlin.gradle
+          fi
+
+      - name: Find APK
+        run: |
+          echo "APK ที่สร้างได้:"
+          find "$PROJECT_DIR" -type f -name "*.apk" -print
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DustinBot-debug-apk
+          path: |
+            **/build/outputs/apk/**/*.apk
+          if-no-files-found: error
